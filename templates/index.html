@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Team 09 — CSV Compressor</title>
+  <link rel="preconnect" href="https://fonts.gstatic.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root{
+      --bg1:#ff4d6d; /* bright pink */
+      --bg2:#ffaf40; /* orange */
+      --accent:#06d6a0; /* teal */
+      --card:#ffffff10;
+      --text:#06121a;
+      --muted:#e6eef8;
+      --glass: rgba(255,255,255,0.06);
+    }
+    *{box-sizing:border-box}
+    body{font-family:Inter,system-ui,Segoe UI,Roboto,"Helvetica Neue",Arial; margin:0; background: linear-gradient(135deg,var(--bg1),var(--bg2)); color:var(--muted); -webkit-font-smoothing:antialiased; min-height:100vh}
+    header{backdrop-filter: blur(6px); padding:18px 28px; display:flex; align-items:center; justify-content:space-between}
+    .brand{display:flex;align-items:center;gap:12px}
+    .logo{width:52px;height:52px;border-radius:12px;background:linear-gradient(135deg,#fff,#fff8);display:flex;align-items:center;justify-content:center;font-weight:800;color:var(--bg1);box-shadow:0 12px 28px rgba(0,0,0,0.15);font-size:18px}
+    h1{margin:0;color:white;font-size:20px}
+    header .subtitle{color:rgba(255,255,255,0.9);font-size:13px}
+
+    main{max-width:1100px;margin:22px auto;padding:18px; min-height: calc(100vh - 180px)}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit, minmax(320px,1fr));gap:18px}
+    .card{background:var(--card); border-radius:14px; padding:18px; box-shadow:0 10px 30px rgba(0,0,0,0.18); border:1px solid rgba(255,255,255,0.06); color:var(--text)}
+
+    .card h3{margin:0 0 10px 0}
+    .controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+    input[type=file]{background:transparent;padding:10px;border-radius:10px;border:2px dashed rgba(255,255,255,0.12); color:var(--text);width:60%}
+    button{background:var(--accent); color:#042027;border:0;padding:10px 14px;border-radius:12px;font-weight:700;cursor:pointer;box-shadow:0 10px 28px rgba(6,214,160,0.12)}
+    button.secondary{background:transparent;border:2px solid rgba(255,255,255,0.08); color:var(--text);font-weight:700}
+    button.clicked{transform:translateY(1px) scale(0.99); box-shadow:0 6px 18px rgba(0,0,0,0.12); opacity:0.95}
+    a.link{color:var(--bg1); font-weight:700}
+    pre{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)); padding:14px;border-radius:12px; overflow:auto;color:#042027}
+
+    footer{margin-top:20px;padding:14px 28px;border-top:1px solid rgba(0,0,0,0.08);display:flex;justify-content:space-between;align-items:center;font-size:14px;color:white}
+    .team-list{display:flex;gap:12px;flex-wrap:wrap}
+    .name-pill{background:rgba(255,255,255,0.9);padding:8px 12px;border-radius:12px;color:var(--bg1);font-weight:700}
+
+    /* overlay full-screen details */
+    .overlay{position:fixed;inset:0;background:linear-gradient(180deg, rgba(0,0,0,0.6), rgba(0,0,0,0.5));display:flex;align-items:center;justify-content:center;z-index:60;}
+    .overlay .panel{width:90%;max-width:1100px;height:90%;background:linear-gradient(180deg,#ffffff, #fff7eb);border-radius:16px;padding:18px;overflow:auto}
+    .overlay .panel h2{margin:0 0 8px 0;color:var(--bg1)}
+    .overlay .close{position:absolute;right:22px;top:22px;background:var(--bg1);color:white;padding:8px 12px;border-radius:10px;border:0;cursor:pointer}
+
+    @media (max-width:700px){input[type=file]{width:100%} .logo{width:44px;height:44px}}
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <div class="logo">09</div>
+      <div>
+        <h1>Team 09</h1>
+        <div class="subtitle">CSV Compressor — upload, compress, decompress, verify</div>
+      </div>
+    </div>
+    <div class="subtitle">Bright • Fast • Playful</div>
+  </header>
+
+  <main>
+    <div class="grid">
+      <section class="card" id="compressCard">
+        <h3>Compress CSV</h3>
+        <div class="controls">
+          <input id="csvfile" type="file" accept="text/csv" />
+          <button id="compressBtn">Compress</button>
+          <button id="detailsBtn" class="secondary" disabled>Get Details</button>
+          <div id="downloadLink" style="margin-left:auto"></div>
+        </div>
+        <div style="margin-top:12px">
+          <small style="color:rgba(0,0,0,0.6)">After compression, details appear below. Click "Get Details" to open a full-screen view.</small>
+          <pre id="detailsPre" style="margin-top:12px; height:220px;">No details yet. Compress a CSV to see encoding summary here.</pre>
+        </div>
+      </section>
+
+      <section class="card" id="decompressCard">
+        <h3>Decompress .cscz</h3>
+        <div class="controls">
+          <input id="csczfile" type="file" accept=".cscz,application/zip" />
+          <button id="decompressBtn">Decompress</button>
+          <div id="decompLink" style="margin-left:auto"></div>
+        </div>
+        <div style="margin-top:12px">
+          <small style="color:rgba(0,0,0,0.6)">Upload a .cscz file to restore CSV. The download link will appear once done.</small>
+        </div>
+      </section>
+
+      <section class="card" id="verifyCard">
+        <h3>Verify two CSVs</h3>
+        <div class="controls">
+          <input id="vfile1" type="file" accept="text/csv" />
+          <input id="vfile2" type="file" accept="text/csv" />
+          <button id="verifyBtn">Verify</button>
+        </div>
+        <div style="margin-top:12px">
+          <pre id="verifyPre" style="height:220px;">Verification results will appear here.</pre>
+        </div>
+      </section>
+    </div>
+
+    <div style="margin-top:18px; text-align:center; color:rgba(0,0,0,0.6); font-size:13px">
+      <em>Tip:</em> Files are stored in memory for this demo — consider persistent storage and token expiry for production.
+    </div>
+  </main>
+
+  <footer>
+    <div style="font-weight:800">Team 09 — CSV Compressor</div>
+    <div class="team-list">
+        <div class="name-pill">E Agnes Rachel — 22MID0181</div>
+        <div class="name-pill">Hitha Sree P — 22MID0173</div>
+        <div class="name-pill">Charath H J — 22MIC0088</div>
+        <div class="name-pill">Jijo Sebastian — 22MIC0161</div>
+    </div>
+  </footer>
+
+  <!-- full-screen details overlay (hidden by default) -->
+  <div id="detailsOverlay" class="overlay" style="display:none">
+    <div class="panel">
+      <button class="close" id="overlayClose">Close</button>
+      <h2>Compression Details</h2>
+      <div id="overlayContent" style="white-space:pre-wrap; color:#333; background:transparent; margin-top:12px; font-family:monospace"></div>
+    </div>
+  </div>
+
+<script>
+let lastToken = null;
+
+function setClicked(btn){
+  btn.classList.add('clicked');
+  const prev = btn.textContent;
+  btn.textContent = 'Clicked ✓';
+  // keep clicked state for short time then revert (but keep appearance if it's detailsBtn)
+  setTimeout(()=>{
+    if(!btn.classList.contains('persist')){
+      btn.classList.remove('clicked');
+      btn.textContent = prev;
+    }
+  }, 1200);
+}
+
+async function postFile(url, fileFieldName, file){
+  const fd = new FormData(); fd.append(fileFieldName, file);
+  const res = await fetch(url, { method: 'POST', body: fd });
+  return res.json();
+}
+
+// Compress
+document.getElementById('compressBtn').addEventListener('click', async function(){
+  const btn = this;
+  const f = document.getElementById('csvfile').files[0];
+  if (!f) { alert('Pick a CSV file first'); return; }
+  btn.disabled = true; btn.textContent = 'Compressing...';
+  setClicked(btn);
+  try{
+    const j = await postFile('/api/compress', 'file', f);
+    if (j.error){ alert(j.error); return; }
+    lastToken = j.token;
+    document.getElementById('downloadLink').innerHTML = `<a class="link" href="/download/${j.token}">Download .cscz</a>`;
+    document.getElementById('detailsBtn').disabled = false;
+    // show details immediately in detailsPre (display before clicking Get Details)
+    document.getElementById('detailsPre').textContent = JSON.stringify(j.metadata, null, 2);
+  }catch(err){ alert('Compression failed: '+err); }
+  finally{ btn.disabled = false; btn.textContent = 'Compress'; }
+});
+
+// Get Details -> open full overlay and show clicked state persistently
+const detailsBtn = document.getElementById('detailsBtn');
+detailsBtn.addEventListener('click', async function(){
+  if(!lastToken) return; 
+  this.classList.add('persist');
+  setClicked(this);
+  const res = await fetch(`/api/details/${lastToken}`);
+  const j = await res.json();
+  document.getElementById('overlayContent').textContent = JSON.stringify(j, null, 2);
+  document.getElementById('detailsOverlay').style.display = 'flex';
+});
+
+// close overlay
+document.getElementById('overlayClose').addEventListener('click', function(){
+  document.getElementById('detailsOverlay').style.display = 'none';
+  // remove persistent clicked state from detailsBtn
+  detailsBtn.classList.remove('persist');
+  detailsBtn.classList.remove('clicked');
+  detailsBtn.textContent = 'Get Details';
+});
+
+// Decompress
+document.getElementById('decompressBtn').addEventListener('click', async function(){
+  const btn = this;
+  const f = document.getElementById('csczfile').files[0];
+  if (!f) { alert('Pick a .cscz file first'); return; }
+  btn.disabled = true; btn.textContent = 'Working...';
+  setClicked(btn);
+  try{
+    const j = await postFile('/api/decompress', 'file', f);
+    if (j.error){ alert(j.error); return; }
+    document.getElementById('decompLink').innerHTML = `<a class="link" href="/download/${j.token}">Download CSV</a>`;
+  }catch(err){ alert('Decompression failed: '+err); }
+  finally{ btn.disabled = false; btn.textContent = 'Decompress'; }
+});
+
+// Verify
+document.getElementById('verifyBtn').addEventListener('click', async function(){
+  const btn = this;
+  const f1 = document.getElementById('vfile1').files[0];
+  const f2 = document.getElementById('vfile2').files[0];
+  if (!f1 || !f2) { alert('Pick both CSV files'); return; }
+  btn.disabled = true; btn.textContent = 'Verifying...';
+  setClicked(btn);
+  const fd = new FormData(); fd.append('a', f1); fd.append('b', f2);
+  const res = await fetch('/api/verify', { method: 'POST', body: fd });
+  const j = await res.json();
+  document.getElementById('verifyPre').textContent = JSON.stringify(j, null, 2);
+  btn.disabled = false; btn.textContent = 'Verify';
+});
+</script>
+</body>
+</html>
