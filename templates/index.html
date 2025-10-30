@@ -10,7 +10,7 @@
     :root{
       --bg1:#001F3F; 
       --bg2:#ffaf40;
-      --accent:#06d6a0; /* teal */
+      --accent:#06d6a0;
       --card:#ffffff10;
       --text:#06121a;
       --muted:#e6eef8;
@@ -59,7 +59,7 @@
         <div class="subtitle">CSV Compressor — upload, compress, decompress, verify</div>
       </div>
     </div>
-    <div class="subtitle">Simple • Fast • Fresh?</div>
+    <div class="subtitle">Simple • Fast • Fresh</div>
   </header>
 
   <main>
@@ -118,7 +118,6 @@
     </div>
   </footer>
 
-  <!-- full-screen details overlay (hidden by default) -->
   <div id="detailsOverlay" class="overlay" style="display:none">
     <div class="panel">
       <button class="close" id="overlayClose">Close</button>
@@ -130,9 +129,7 @@
 <script>
 let lastToken = null;
 
-// NOTE: "setClicked" helper removed as requested. Calls to it were also removed below.
 
-// helper to post file
 async function postFile(url, fileFieldName, file){
   const fd = new FormData(); fd.append(fileFieldName, file);
   const res = await fetch(url, { method: 'POST', body: fd });
@@ -202,3 +199,4 @@ document.getElementById('verifyBtn').addEventListener('click', async function(){
 </script>
 </body>
 </html>
+
