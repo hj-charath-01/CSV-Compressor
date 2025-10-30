@@ -8,8 +8,8 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
   <style>
     :root{
-      --bg1:#ff4d6d; /* bright pink */
-      --bg2:#ffaf40; /* orange */
+      --bg1:#001F3F; 
+      --bg2:#ffaf40;
       --accent:#06d6a0; /* teal */
       --card:#ffffff10;
       --text:#06121a;
@@ -59,7 +59,7 @@
         <div class="subtitle">CSV Compressor — upload, compress, decompress, verify</div>
       </div>
     </div>
-    <div class="subtitle">Bright • Fast • Playful</div>
+    <div class="subtitle">Simple • Fast • Fresh?</div>
   </header>
 
   <main>
@@ -73,7 +73,7 @@
           <div id="downloadLink" style="margin-left:auto"></div>
         </div>
         <div style="margin-top:12px">
-          <small style="color:rgba(0,0,0,0.6)">After compression, details appear below. Click "Get Details" to open a full-screen view.</small>
+          <small style="color:rgba(0,0,0,0.6)">After compression, details appear below.<br> Click "Get Details" to open <br>a full-screen view.</small>
           <pre id="detailsPre" style="margin-top:12px; height:220px;">No details yet. Compress a CSV to see encoding summary here.</pre>
         </div>
       </section>
@@ -104,7 +104,7 @@
     </div>
 
     <div style="margin-top:18px; text-align:center; color:rgba(0,0,0,0.6); font-size:13px">
-      <em>Tip:</em> Files are stored in memory for this demo — consider persistent storage and token expiry for production.
+      <em>Attention:</em> Larger files take time.
     </div>
   </main>
 
@@ -130,19 +130,9 @@
 <script>
 let lastToken = null;
 
-function setClicked(btn){
-  btn.classList.add('clicked');
-  const prev = btn.textContent;
-  btn.textContent = 'Clicked ✓';
-  // keep clicked state for short time then revert (but keep appearance if it's detailsBtn)
-  setTimeout(()=>{
-    if(!btn.classList.contains('persist')){
-      btn.classList.remove('clicked');
-      btn.textContent = prev;
-    }
-  }, 1200);
-}
+// NOTE: "setClicked" helper removed as requested. Calls to it were also removed below.
 
+// helper to post file
 async function postFile(url, fileFieldName, file){
   const fd = new FormData(); fd.append(fileFieldName, file);
   const res = await fetch(url, { method: 'POST', body: fd });
@@ -155,7 +145,6 @@ document.getElementById('compressBtn').addEventListener('click', async function(
   const f = document.getElementById('csvfile').files[0];
   if (!f) { alert('Pick a CSV file first'); return; }
   btn.disabled = true; btn.textContent = 'Compressing...';
-  setClicked(btn);
   try{
     const j = await postFile('/api/compress', 'file', f);
     if (j.error){ alert(j.error); return; }
@@ -168,12 +157,10 @@ document.getElementById('compressBtn').addEventListener('click', async function(
   finally{ btn.disabled = false; btn.textContent = 'Compress'; }
 });
 
-// Get Details -> open full overlay and show clicked state persistently
+// Get Details -> open full overlay
 const detailsBtn = document.getElementById('detailsBtn');
 detailsBtn.addEventListener('click', async function(){
   if(!lastToken) return; 
-  this.classList.add('persist');
-  setClicked(this);
   const res = await fetch(`/api/details/${lastToken}`);
   const j = await res.json();
   document.getElementById('overlayContent').textContent = JSON.stringify(j, null, 2);
@@ -183,10 +170,6 @@ detailsBtn.addEventListener('click', async function(){
 // close overlay
 document.getElementById('overlayClose').addEventListener('click', function(){
   document.getElementById('detailsOverlay').style.display = 'none';
-  // remove persistent clicked state from detailsBtn
-  detailsBtn.classList.remove('persist');
-  detailsBtn.classList.remove('clicked');
-  detailsBtn.textContent = 'Get Details';
 });
 
 // Decompress
@@ -195,7 +178,6 @@ document.getElementById('decompressBtn').addEventListener('click', async functio
   const f = document.getElementById('csczfile').files[0];
   if (!f) { alert('Pick a .cscz file first'); return; }
   btn.disabled = true; btn.textContent = 'Working...';
-  setClicked(btn);
   try{
     const j = await postFile('/api/decompress', 'file', f);
     if (j.error){ alert(j.error); return; }
@@ -211,7 +193,6 @@ document.getElementById('verifyBtn').addEventListener('click', async function(){
   const f2 = document.getElementById('vfile2').files[0];
   if (!f1 || !f2) { alert('Pick both CSV files'); return; }
   btn.disabled = true; btn.textContent = 'Verifying...';
-  setClicked(btn);
   const fd = new FormData(); fd.append('a', f1); fd.append('b', f2);
   const res = await fetch('/api/verify', { method: 'POST', body: fd });
   const j = await res.json();
