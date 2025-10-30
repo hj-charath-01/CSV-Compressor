@@ -1,24 +1,9 @@
-#!/usr/bin/env python3
 """
-csv_compressor_web.py
-
-Single-file Flask web app + CLI for compressing/decompressing/verifying CSV files.
-
-Changes from prior versions:
- - DOES NOT store original.csv inside the archive (per your request).
- - CLI exposes only three subcommands: compress, decompress, verify (no extra flags).
-
-Web UI:
- - Upload a CSV and click Compress -> returns a downloadable .cscz and a token to fetch details.
- - After compressing, click Get Details -> shows per-column encoding and compressed-bytes.
- - Upload a .cscz and click Decompress -> returns decompressed CSV.
- - Upload two CSVs and click Verify -> runs semantic verification and returns JSON report.
-
 Run:
-  - As server: python csv_compressor_web.py runserver
-  - CLI: python csv_compressor_web.py compress input.csv output.cscz
-         python csv_compressor_web.py decompress input.cscz output.csv
-         python csv_compressor_web.py verify orig.csv recon.csv
+  - As server: python csv_compressor.py runserver
+  - CLI: python csv_compressor.py compress input.csv output.cscz
+         python csv_compressor.py decompress input.cscz output.csv
+         python csv_compressor.py verify orig.csv reconstructed.csv
 
 """
 from __future__ import annotations
@@ -30,14 +15,9 @@ import csv
 import zipfile
 import warnings
 import os
-import sys
-import gzip
-import bz2
-import lzma
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 import heapq
-import time
 import uuid
 import tempfile
 
@@ -45,32 +25,26 @@ from flask import Flask, request, jsonify, send_file, render_template
 import numpy as np
 import pandas as pd
 
-# ---------------------------------------------------------------------------
-# Settings / thresholds
-# ---------------------------------------------------------------------------
+
+# thresholds
 MAX_CAT_UNIQUE = 200
 RLE_MIN_RUN_FRACTION = 0.02
 DELTA_MAX_NONMONOTONIC = 0.05
 DELTA_MAX_VARIATION_RATIO = 0.2
-PROGRESS_UPDATE_INTERVAL = 0.1
 
-# ---------------------------------------------------------------------------
-# Utility: small in-memory store for generated files (token -> payload)
-# ---------------------------------------------------------------------------
 _store: Dict[str, Dict[str, Any]] = {}
 
-# ---------------------------------------------------------------------------
-# Core helpers (RLE, delta, dict, huffman) - adapted from earlier script
-# ---------------------------------------------------------------------------
 
-def detect_datetime_series(s: pd.Series, sample_size=100) -> Tuple[pd.Series, bool]:
+#  Core helpers (RLE, delta, dict, Huffman) 
+
+def detect_datetime_series(s: pd.Series, sample_size: int = 100) -> Tuple[pd.Series, bool]:
     vals = s.dropna().astype(str)
     if len(vals) == 0:
         return s, False
     sample = vals.sample(min(sample_size, len(vals)), random_state=0)
     date_like = (
-        sample.str.match(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}") |
-        sample.str.match(r"^\d{1,2}[-/]\d{1,2}[-/]\d{2,4}")
+        sample.str.match(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}")
+        | sample.str.match(r"^\d{1,2}[-/]\d{1,2}[-/]\d{2,4}")
     )
     if date_like.mean() < 0.8:
         return s, False
@@ -88,8 +62,8 @@ def detect_datetime_series(s: pd.Series, sample_size=100) -> Tuple[pd.Series, bo
 def rle_encode(values: List[Any]) -> Tuple[List[Any], List[int]]:
     if len(values) == 0:
         return [], []
-    vals = []
-    lengths = []
+    vals: List[Any] = []
+    lengths: List[int] = []
     prev = values[0]
     count = 1
     for v in values[1:]:
@@ -163,9 +137,9 @@ def delta_encode_datetime_preserve(conv_series: pd.Series) -> Dict[str, Any]:
     n = len(conv_series)
     if n == 0:
         return {"n": 0, "first_index": None, "first": None, "deltas": []}
-    ts_values = conv_series.apply(lambda x: None if pd.isna(x) else int(pd.Timestamp(x).value)).tolist()
-    first_index = None
-    first_ns = None
+    ts_values: List[Optional[int]] = conv_series.apply(lambda x: None if pd.isna(x) else int(pd.Timestamp(x).value)).tolist()
+    first_index: Optional[int] = None
+    first_ns: Optional[int] = None
     for idx, v in enumerate(ts_values):
         if v is not None:
             first_index = idx
@@ -219,12 +193,13 @@ def delta_decode_datetime(payload: Dict[str, Any]) -> List[str]:
         if v is None:
             res.append("")
         else:
+            # default ISO formatting only if we don't have original strings available later
             res.append(pd.to_datetime(int(v)).isoformat())
     return res
 
 
 def dict_encode_series(s: pd.Series) -> Dict[str, Any]:
-    vals = []
+    vals: List[Any] = []
     for v in s.tolist():
         if pd.isna(v):
             vals.append('__nan__')
@@ -253,7 +228,7 @@ def dict_decode(payload: Dict[str, Any]) -> List[str]:
     return out
 
 
-# Huffman functions (kept for completeness from advanced version)
+# Huffman functions (byte-oriented)
 class HuffmanNode:
     def __init__(self, weight: int, symbol: Optional[int] = None, left=None, right=None):
         self.weight = weight
@@ -261,17 +236,17 @@ class HuffmanNode:
         self.left = left
         self.right = right
 
-    def __lt__(self, other):
+    def __lt__(self, other: 'HuffmanNode') -> bool:  # for heapq
         return self.weight < other.weight
 
 
 def build_huffman_codes(data: bytes) -> Dict[int, str]:
     if len(data) == 0:
         return {}
-    freq = {}
+    freq: Dict[int, int] = {}
     for b in data:
         freq[b] = freq.get(b, 0) + 1
-    pq = []
+    pq: List[Tuple[int, HuffmanNode]] = []
     for sym, w in freq.items():
         heapq.heappush(pq, (w, HuffmanNode(w, symbol=sym)))
     if len(pq) == 1:
@@ -285,7 +260,7 @@ def build_huffman_codes(data: bytes) -> Dict[int, str]:
     _, root = heapq.heappop(pq)
     codes: Dict[int, str] = {}
 
-    def walk(node: HuffmanNode, prefix: str):
+    def walk(node: HuffmanNode, prefix: str) -> None:
         if node.symbol is not None:
             codes[node.symbol] = prefix or '0'
             return
@@ -318,9 +293,7 @@ def huffman_decode_bytes(codes_str: Dict[str, str], bin_data: bytes, bit_length:
     if bit_length == 0:
         return b''
     codes = {v: int(k) for k, v in codes_str.items()}
-    bits = []
-    for b in bin_data:
-        bits.append(format(b, '08b'))
+    bits: List[str] = [format(b, '08b') for b in bin_data]
     bitstr = ''.join(bits)[:bit_length]
     out = bytearray()
     cur = ''
@@ -333,12 +306,11 @@ def huffman_decode_bytes(codes_str: Dict[str, str], bin_data: bytes, bit_length:
             cur = ''
     return bytes(out)
 
-# ---------------------------------------------------------------------------
-# Encoding decision
-# ---------------------------------------------------------------------------
+
+# Encoding decision 
 
 def choose_encodings(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
-    enc = {}
+    enc: Dict[str, Dict[str, Any]] = {}
     n = len(df)
     for col in df.columns:
         s = df[col]
@@ -355,7 +327,8 @@ def choose_encodings(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
                 if frac_nonmono <= DELTA_MAX_NONMONOTONIC:
                     col_meta['encoding'] = 'delta_datetime'
                 else:
-                    col_meta['encoding'] = 'raw'
+                    unique_vals = int(s.nunique(dropna=False))
+                    col_meta['encoding'] = 'dict' if unique_vals <= MAX_CAT_UNIQUE else 'huffman'
             enc[col] = col_meta
             continue
 
@@ -380,7 +353,8 @@ def choose_encodings(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
                 if frac_nonmono <= DELTA_MAX_NONMONOTONIC and var_ratio <= DELTA_MAX_VARIATION_RATIO:
                     col_meta['encoding'] = 'delta_numeric'
                 else:
-                    col_meta['encoding'] = 'raw'
+                    unique_vals = int(s.nunique(dropna=False))
+                    col_meta['encoding'] = 'dict' if unique_vals <= MAX_CAT_UNIQUE else 'huffman'
             enc[col] = col_meta
             continue
 
@@ -407,97 +381,22 @@ def choose_encodings(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
         enc[col] = col_meta
     return enc
 
-# ---------------------------------------------------------------------------
-# Fallback compressors used previously (kept but optional)
-# ---------------------------------------------------------------------------
 
-def try_fallback_compressions_stream(orig_path: str, show_progress: bool = True) -> Tuple[Optional[bytes], Optional[str]]:
-    try:
-        size = os.path.getsize(orig_path)
-    except Exception:
-        size = None
-
-    candidates: List[Tuple[str, bytes]] = []
-
-    # gzip
-    try:
-        buf = io.BytesIO()
-        with (open(orig_path, 'rb')) as fin, gzip.GzipFile(fileobj=buf, mode='wb', compresslevel=9) as gz:
-            read = 0
-            while True:
-                chunk = fin.read(65536)
-                if not chunk:
-                    break
-                gz.write(chunk)
-                read += len(chunk)
-        gz_bytes = buf.getvalue()
-        candidates.append(('gzip', gz_bytes))
-    except Exception:
-        pass
-
-    # bz2
-    try:
-        compressor = bz2.BZ2Compressor(9)
-        compressed_parts = []
-        with open(orig_path, 'rb') as fin:
-            while True:
-                chunk = fin.read(65536)
-                if not chunk:
-                    break
-                compressed_parts.append(compressor.compress(chunk))
-            compressed_parts.append(compressor.flush())
-        bz_bytes = b''.join(compressed_parts)
-        candidates.append(('bz2', bz_bytes))
-    except Exception:
-        pass
-
-    # lzma
-    try:
-        compressor = lzma.LZMACompressor(preset=9)
-        compressed_parts = []
-        with open(orig_path, 'rb') as fin:
-            while True:
-                chunk = fin.read(65536)
-                if not chunk:
-                    break
-                compressed_parts.append(compressor.compress(chunk))
-            compressed_parts.append(compressor.flush())
-        lz_bytes = b''.join(compressed_parts)
-        candidates.append(('lzma', lz_bytes))
-    except Exception:
-        pass
-
-    if not candidates:
-        return None, None
-
-    candidates.sort(key=lambda x: len(x[1]))
-    return candidates[0][1], candidates[0][0]
-
-# ---------------------------------------------------------------------------
-# Compression (in-memory ZIP) - NOTE: does NOT store original.csv inside archive
-# ---------------------------------------------------------------------------
+# Compression 
 
 def compress_csv_inmemory_bytes(input_csv_path: str, show_progress: bool = False) -> Tuple[bytes, Dict[str, Any]]:
-    """
-    Compress input CSV into an in-memory .cscz (zip) and return (zip_bytes, details_metadata)
-    This function does NOT write original.csv into the archive.
-    details_metadata is the metadata dict that would be written into metadata.json and also
-    contains per-column compressed size estimates computed after creating the in-memory zip.
-    """
     df = pd.read_csv(input_csv_path, dtype=str)
     nrows, ncols = df.shape
     enc = choose_encodings(df)
 
     in_mem = io.BytesIO()
     with zipfile.ZipFile(in_mem, 'w', compression=zipfile.ZIP_DEFLATED) as Z:
-        metadata = {
+        metadata: Dict[str, Any] = {
             'original_shape': [nrows, ncols],
             'columns': {},
             'pandas_version': pd.__version__,
             'created': datetime.utcnow().isoformat() + 'Z',
             'original_file': os.path.basename(input_csv_path),
-            'store_original': False,
-            'fallback': None
         }
         for col in df.columns:
             s = df[col]
@@ -508,22 +407,40 @@ def compress_csv_inmemory_bytes(input_csv_path: str, show_progress: bool = False
                 payload = {'values': vals, 'lengths': lengths, 'n': len(s)}
                 Z.writestr(f'cols/{col}.rle.json', json.dumps(payload, ensure_ascii=False))
                 col_info['rle_file'] = f'cols/{col}.rle.json'
+
             elif enc_name == 'delta_numeric':
                 arr = pd.to_numeric(s, errors='coerce').to_numpy(dtype=float)
                 payload = delta_encode_numeric_preserve(arr)
                 Z.writestr(f'cols/{col}.delta.json', json.dumps(payload, ensure_ascii=False))
                 col_info['delta_file'] = f'cols/{col}.delta.json'
+
             elif enc_name == 'delta_datetime':
+                # store both delta payload and a Huffman-compressed blob of original textual values
                 conv = pd.to_datetime(s, errors='coerce', infer_datetime_format=True)
                 payload = delta_encode_datetime_preserve(conv)
                 Z.writestr(f'cols/{col}.deltadt.json', json.dumps(payload, ensure_ascii=False))
                 col_info['deltadt_file'] = f'cols/{col}.deltadt.json'
+
+                # store original strings compressed using Huffman so we can exactly reproduce original formatting on decode
+                orig_strings = s.fillna('__nan__').tolist()
+                orig_json_bytes = json.dumps(orig_strings, ensure_ascii=False).encode('utf-8')
+                if len(orig_json_bytes) > 0:
+                    huff = huffman_encode_bytes(orig_json_bytes)
+                    Z.writestr(f'cols/{col}.deltadt.orig.bin', huff['bin'])
+                    Z.writestr(
+                        f'cols/{col}.deltadt.orig.json',
+                        json.dumps({'codes': huff['codes'], 'bit_length': huff['bit_length'], 'n': len(orig_strings)}, ensure_ascii=False),
+                    )
+                    col_info['deltadt_orig_json'] = f'cols/{col}.deltadt.orig.json'
+                    col_info['deltadt_orig_bin'] = f'cols/{col}.deltadt.orig.bin'
+
             elif enc_name == 'dict':
                 payload = dict_encode_series(s)
                 Z.writestr(f'cols/{col}.dict.json', json.dumps(payload, ensure_ascii=False))
                 col_info['dict_file'] = f'cols/{col}.dict.json'
+
             elif enc_name == 'huffman':
-                vals = []
+                vals: List[str] = []
                 for v in s.tolist():
                     if pd.isna(v):
                         vals.append('__nan__')
@@ -538,42 +455,39 @@ def compress_csv_inmemory_bytes(input_csv_path: str, show_progress: bool = False
                 Z.writestr(f'cols/{col}.huff.json', json.dumps(meta, ensure_ascii=False))
                 col_info['huff_file'] = f'cols/{col}.huff.json'
                 col_info['huff_bin'] = f'cols/{col}.huff.bin'
+
             else:
-                buf = io.StringIO()
-                writer = csv.writer(buf)
-                for v in s.tolist():
-                    if pd.isna(v):
-                        writer.writerow(['__nan__'])
-                    elif v == '':
-                        writer.writerow(['__empty__'])
-                    else:
-                        writer.writerow([v])
-                Z.writestr(f'cols/{col}.raw.csv', buf.getvalue())
-                col_info['raw_file'] = f'cols/{col}.raw.csv'
+                # safe fallback: dictionary encoding
+                payload = dict_encode_series(s)
+                Z.writestr(f'cols/{col}.dict.json', json.dumps(payload, ensure_ascii=False))
+                col_info['dict_file'] = f'cols/{col}.dict.json'
+
             metadata['columns'][col] = col_info
+
         Z.writestr('metadata.json', json.dumps(metadata, ensure_ascii=False, default=str))
+
     in_mem.seek(0)
     zip_bytes = in_mem.getvalue()
 
-    # compute per-column compressed sizes
+    # compute compressed size of each column
     with zipfile.ZipFile(io.BytesIO(zip_bytes), 'r') as Z2:
         info_map = {info.filename: info for info in Z2.infolist()}
         per_column_sizes: Dict[str, int] = {}
         for col, info in metadata['columns'].items():
             enc_name = info['encoding']
-            files = []
+            files: List[str] = []
             if enc_name == 'rle' and 'rle_file' in info:
                 files = [info['rle_file']]
             elif enc_name == 'delta_numeric' and 'delta_file' in info:
                 files = [info['delta_file']]
             elif enc_name == 'delta_datetime' and 'deltadt_file' in info:
                 files = [info['deltadt_file']]
+                if 'deltadt_orig_json' in info and 'deltadt_orig_bin' in info:
+                    files += [info['deltadt_orig_json'], info['deltadt_orig_bin']]
             elif enc_name == 'dict' and 'dict_file' in info:
                 files = [info['dict_file']]
             elif enc_name == 'huffman':
                 files = [info['huff_file'], info['huff_bin']] if 'huff_file' in info and 'huff_bin' in info else []
-            elif enc_name == 'raw' and 'raw_file' in info:
-                files = [info['raw_file']]
             else:
                 for fname in info_map:
                     if fname.startswith(f'cols/{col}.'):
@@ -585,73 +499,65 @@ def compress_csv_inmemory_bytes(input_csv_path: str, show_progress: bool = False
             per_column_sizes[col] = s
         metadata['per_column_compressed_bytes'] = per_column_sizes
         metadata['zip_size'] = len(zip_bytes)
+
     return zip_bytes, metadata
 
-# ---------------------------------------------------------------------------
-# Decompress in-memory (reconstruct CSV bytes)
-# ---------------------------------------------------------------------------
+
+# Decompress in-memory 
 
 def decompress_cscz_bytes(cscz_bytes: bytes) -> Tuple[bytes, Dict[str, Any]]:
-    """
-    Decompress .cscz bytes and return (csv_bytes, metadata)
-    If a fallback compressed original is present the function will attempt to restore it; otherwise
-    it reconstructs from per-column encodings.
-    """
     with zipfile.ZipFile(io.BytesIO(cscz_bytes), 'r') as Z:
         meta = json.loads(Z.read('metadata.json').decode('utf-8'))
-        # try fallback inner
-        fb = meta.get('fallback')
-        if fb:
-            inner = fb.get('inner_name')
-            algo = fb.get('algo')
-            if inner and inner in Z.namelist():
-                inner_bytes = Z.read(inner)
-                try:
-                    if algo == 'gzip':
-                        orig = gzip.decompress(inner_bytes)
-                    elif algo == 'bz2':
-                        orig = bz2.decompress(inner_bytes)
-                    elif algo == 'lzma':
-                        orig = lzma.decompress(inner_bytes)
-                    else:
-                        orig = None
-                    if orig is not None:
-                        return orig, {'restored_from': 'fallback', 'metadata': meta}
-                except Exception:
-                    pass
-        # otherwise reconstruct
+
         cols = list(meta['columns'].keys())
         nrows = meta['original_shape'][0]
-        reconstructed = {col: [''] * nrows for col in cols}
+        reconstructed: Dict[str, List[str]] = {col: [''] * nrows for col in cols}
+
         for col in cols:
             info = meta['columns'][col]
             enc = info['encoding']
+
             if enc == 'rle':
                 payload = json.loads(Z.read(info['rle_file']).decode('utf-8'))
-                vals = payload['values']; lengths = payload['lengths']
+                vals = payload['values']
+                lengths = payload['lengths']
                 out = rle_decode(vals, lengths)
                 reconstructed[col] = [("" if v == '__nan__' else v) for v in out[:nrows]]
+
             elif enc == 'delta_numeric':
                 payload = json.loads(Z.read(info['delta_file']).decode('utf-8'))
                 out = delta_decode_numeric(payload)
                 reconstructed[col] = out[:nrows]
+
             elif enc == 'delta_datetime':
-                payload = json.loads(Z.read(info['deltadt_file']).decode('utf-8'))
-                out = delta_decode_datetime(payload)
-                reconstructed[col] = out[:nrows]
+                if 'deltadt_orig_json' in info and 'deltadt_orig_bin' in info:
+                    orig_meta = json.loads(Z.read(info['deltadt_orig_json']).decode('utf-8'))
+                    bin_data = Z.read(info['deltadt_orig_bin'])
+                    decoded_bytes = huffman_decode_bytes(orig_meta['codes'], bin_data, int(orig_meta['bit_length']))
+                    vals = json.loads(decoded_bytes.decode('utf-8'))
+                    reconstructed[col] = [("" if v == '__nan__' or v is None else v) for v in vals[:nrows]]
+                else:
+                    payload = json.loads(Z.read(info['deltadt_file']).decode('utf-8'))
+                    out = delta_decode_datetime(payload)
+                    reconstructed[col] = out[:nrows]
+
             elif enc == 'dict':
                 payload = json.loads(Z.read(info['dict_file']).decode('utf-8'))
                 out = dict_decode(payload)
                 reconstructed[col] = out[:nrows]
+
             elif enc == 'huffman':
                 meta_json = json.loads(Z.read(info['huff_file']).decode('utf-8'))
                 bin_data = Z.read(info['huff_bin'])
                 decoded_bytes = huffman_decode_bytes(meta_json['codes'], bin_data, int(meta_json['bit_length']))
                 vals = json.loads(decoded_bytes.decode('utf-8'))
                 reconstructed[col] = [("" if v == '__nan__' or v == '__empty__' else v) for v in vals[:nrows]]
+
             else:
-                raw_text = Z.read(info['raw_file']).decode('utf-8').splitlines()
-                out = []
+                raw_text = []
+                if 'dict_file' in info:
+                    raw_text = Z.read(info['dict_file']).decode('utf-8').splitlines()
+                out: List[str] = []
                 for r in raw_text:
                     if r == '__nan__':
                         out.append('')
@@ -660,6 +566,7 @@ def decompress_cscz_bytes(cscz_bytes: bytes) -> Tuple[bytes, Dict[str, Any]]:
                     else:
                         out.append(r)
                 reconstructed[col] = out[:nrows]
+
         # build CSV bytes
         buf = io.StringIO()
         writer = csv.writer(buf)
@@ -670,10 +577,8 @@ def decompress_cscz_bytes(cscz_bytes: bytes) -> Tuple[bytes, Dict[str, Any]]:
         csv_bytes = buf.getvalue().encode('utf-8')
         return csv_bytes, {'restored_from': 'reconstructed', 'metadata': meta}
 
-# ---------------------------------------------------------------------------
-# Verify helper (reads from given file paths)
-# ---------------------------------------------------------------------------
 
+# Verify helper 
 def verify_csv_roundtrip(orig_path: str, recon_path: str, mode: str = 'semantic') -> Dict[str, Any]:
     report: Dict[str, Any] = {}
     if mode == 'byte':
@@ -682,11 +587,14 @@ def verify_csv_roundtrip(orig_path: str, recon_path: str, mode: str = 'semantic'
             if os.path.getsize(orig_path) == os.path.getsize(recon_path):
                 with open(orig_path, 'rb') as fa, open(recon_path, 'rb') as fb:
                     while True:
-                        a = fa.read(65536); b = fb.read(65536)
+                        a = fa.read(65536)
+                        b = fb.read(65536)
                         if not a and not b:
-                            same = True; break
+                            same = True
+                            break
                         if a != b:
-                            same = False; break
+                            same = False
+                            break
             report['equal'] = same
         except Exception as e:
             report['error'] = str(e)
@@ -696,24 +604,28 @@ def verify_csv_roundtrip(orig_path: str, recon_path: str, mode: str = 'semantic'
     try:
         a_df = pd.read_csv(orig_path, dtype=str)
     except Exception as e:
-        report['error'] = f"Failed to read original CSV: {e}"; return report
+        report['error'] = f"Failed to read original CSV: {e}"
+        return report
     try:
         b_df = pd.read_csv(recon_path, dtype=str)
     except Exception as e:
-        report['error'] = f"Failed to read reconstructed CSV: {e}"; return report
+        report['error'] = f"Failed to read reconstructed CSV: {e}"
+        return report
 
     a_df = a_df.fillna('')
     b_df = b_df.fillna('')
 
     nrows_a, ncols_a = a_df.shape
     nrows_b, ncols_b = b_df.shape
-    report['nrows_a'] = nrows_a; report['ncols_a'] = ncols_a
-    report['nrows_b'] = nrows_b; report['ncols_b'] = ncols_b
+    report['nrows_a'] = nrows_a
+    report['ncols_a'] = ncols_a
+    report['nrows_b'] = nrows_b
+    report['ncols_b'] = ncols_b
 
     nrows = min(nrows_a, nrows_b)
     ncols = min(ncols_a, ncols_b)
 
-    mismatches = []
+    mismatches: List[Dict[str, Any]] = []
     for i in range(nrows):
         for j in range(ncols):
             va = a_df.iat[i, j]
@@ -723,30 +635,27 @@ def verify_csv_roundtrip(orig_path: str, recon_path: str, mode: str = 'semantic'
                 if len(mismatches) >= 50:
                     break
         if len(mismatches) >= 50:
-            break
+                    break
     report['equal'] = (len(mismatches) == 0 and nrows_a == nrows_b and ncols_a == ncols_b)
     report['mismatch_count_shown'] = len(mismatches)
     report['mismatches_sample'] = mismatches
     report['reason'] = 'content-mismatch' if not report['equal'] else 'equal'
     return report
 
-# ---------------------------------------------------------------------------
-# Flask web UI
-# ---------------------------------------------------------------------------
+
+# Flask web UI 
 app = Flask(__name__)
 
-
-
 @app.route('/')
-def index():
+def index() -> str:
     return render_template('index.html')
+
 
 @app.route('/api/compress', methods=['POST'])
 def api_compress():
     f = request.files.get('file')
     if not f:
         return jsonify({'error': 'no file uploaded'}), 400
-    # write to temp file and call compress_inmemory
     with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as t:
         path = t.name
         f.save(path)
@@ -756,23 +665,29 @@ def api_compress():
         _store[token] = {'bytes': zip_bytes, 'metadata': metadata, 'name': os.path.basename(path) + '.cscz'}
         return jsonify({'token': token, 'metadata': metadata})
     finally:
-        os.unlink(path)
+        try:
+            os.unlink(path)
+        except Exception:
+            pass
+
 
 @app.route('/api/details/<token>')
-def api_details(token):
+def api_details(token: str):
     rec = _store.get(token)
     if not rec:
         return jsonify({'error': 'token not found'}), 404
     return jsonify(rec['metadata'])
 
+
 @app.route('/download/<token>')
-def download_token(token):
+def download_token(token: str):
     rec = _store.get(token)
     if not rec:
         return 'not found', 404
     bio = io.BytesIO(rec['bytes'])
     bio.seek(0)
     return send_file(bio, as_attachment=True, download_name=rec.get('name', f'{token}.bin'))
+
 
 @app.route('/api/decompress', methods=['POST'])
 def api_decompress():
@@ -788,17 +703,18 @@ def api_decompress():
     _store[token] = {'bytes': csv_bytes, 'metadata': info, 'name': 'decompressed.csv'}
     return jsonify({'token': token, 'metadata': info})
 
+
 @app.route('/api/verify', methods=['POST'])
 def api_verify():
     a = request.files.get('a')
     b = request.files.get('b')
     if not a or not b:
         return jsonify({'error': 'two files (a and b) required'}), 400
-    # write to temp files
     ta = tempfile.NamedTemporaryFile(delete=False, suffix='.csv')
     tb = tempfile.NamedTemporaryFile(delete=False, suffix='.csv')
     try:
-        a.save(ta.name); b.save(tb.name)
+        a.save(ta.name)
+        b.save(tb.name)
         rep = verify_csv_roundtrip(ta.name, tb.name, mode='semantic')
         return jsonify(rep)
     finally:
@@ -808,18 +724,16 @@ def api_verify():
         except Exception:
             pass
 
-# ---------------------------------------------------------------------------
-# CLI wrappers (only compress/decompress/verify as requested)
-# ---------------------------------------------------------------------------
 
-def compress_csv_cli(input_csv: str, output_cscz: str):
+# CLI wrappers 
+def compress_csv_cli(input_csv: str, output_cscz: str) -> None:
     zip_bytes, metadata = compress_csv_inmemory_bytes(input_csv, show_progress=False)
     with open(output_cscz, 'wb') as f:
         f.write(zip_bytes)
     print(f'Wrote {output_cscz} ({len(zip_bytes)} bytes)')
 
 
-def decompress_cscz_cli(input_cscz: str, output_csv: str):
+def decompress_cscz_cli(input_cscz: str, output_csv: str) -> None:
     with open(input_cscz, 'rb') as f:
         data = f.read()
     csv_bytes, info = decompress_cscz_bytes(data)
@@ -828,15 +742,14 @@ def decompress_cscz_cli(input_cscz: str, output_csv: str):
     print(f'Wrote {output_csv} ({len(csv_bytes)} bytes)')
 
 
-def verify_cli(orig_csv: str, recon_csv: str):
+def verify_cli(orig_csv: str, recon_csv: str) -> None:
     rep = verify_csv_roundtrip(orig_csv, recon_csv, mode='semantic')
     print(json.dumps(rep, indent=2, ensure_ascii=False))
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
+
+# Entry point 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='CSV compressor - web+cli (only compress/decompress/verify CLI).')
+    parser = argparse.ArgumentParser(description='CSV compressor - web+cli (delta/rle/dict/huffman only).')
     sub = parser.add_subparsers(dest='cmd')
     p1 = sub.add_parser('compress')
     p1.add_argument('input_csv')
@@ -856,7 +769,6 @@ if __name__ == '__main__':
     elif args.cmd == 'verify':
         verify_cli(args.orig_csv, args.recon_csv)
     elif args.cmd == 'runserver':
-        # run Flask dev server
         print('Starting web server at http://127.0.0.1:5000')
         app.run(debug=False)
     else:
